@@ -24,20 +24,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Telegram bot token
-# TOKEN: Final = ''
-
-
 class DemoTeleBot(TB):
     def __init__(self, token):
         super().__init__(token)
 
         # Register message handler
         self.register_message_handlers()
-
     
     # Twitter API keys and tokens
-    TWITTER_BEARER_TOKEN = ''
+    TWITTER_BEARER_TOKEN = config('TWITTER_BEARER_TOKEN')
 
     # Initialize Tweepy
     client = tweepy.Client(TWITTER_BEARER_TOKEN)
@@ -50,6 +45,9 @@ class DemoTeleBot(TB):
 
     # Ongoing information request: 'tweet link', 'likes', 'replies', 'retweets', 'bookmarks', 'task'
     ongoing = ''
+
+    # This field tracks if the bot is currently on a raid or not
+    is_raiding = False
 
     def register_message_handlers(self):
         # Start command
@@ -73,33 +71,39 @@ class DemoTeleBot(TB):
                 chat_member = self.get_chat_member(message.chat.id, user_id)
 
                 if chat_member.status in ('administrator', 'creator'):
-                    group_id = message.chat.id
+                    if not self.is_raiding:
+                        self.is_raiding = True
 
-                    self.raid_info[group_id] = {
-                        'status': 'in_progress',
-                        'tweet_link': None,
-                        'likes_threshold': 0,
-                        'replies_threshold': 0,
-                        'retweets_threshold': 0,
-                        'bookmarks_threshold': 0
-                    }
+                        group_id = message.chat.id
 
-                    # Restrict members from sending messages
-                    chat_permissions = ChatPermissions(can_send_messages=False)
+                        self.raid_info[group_id] = {
+                            'status': 'in_progress',
+                            'tweet_link': None,
+                            'likes_threshold': 0,
+                            'replies_threshold': 0,
+                            'retweets_threshold': 0,
+                            'bookmarks_threshold': 0
+                        }
 
-                    self.set_chat_permissions(message.chat.id, chat_permissions)
+                        # Restrict members from sending messages
+                        chat_permissions = ChatPermissions(can_send_messages=False)
 
-                    logger.info(f'User {message.from_user.username} with {chat_member.status} status executed /raid command')
+                        self.set_chat_permissions(message.chat.id, chat_permissions)
 
-                    logger.info(f'Group {message.chat.title} is now set locked for /raid command')
+                        logger.info(f'User {message.from_user.username} with {chat_member.status} status executed /raid command')
+
+                        logger.info(f'Group {message.chat.title} is now set locked for /raid command')
+                        
+                        tweet_message = self.send_message(message.chat.id, 'Group locked. Please provide the tweet link.')
                     
-                    tweet_message = self.send_message(message.chat.id, 'Group locked. Please provide the tweet link.')
-                    
-                    # Set ongoing as 'tweet link'
-                    self.ongoing = 'tweet_link'
+                        # Set ongoing as 'tweet link'
+                        self.ongoing = 'tweet_link'
 
-                    # Add id of tweet message to list so it can be deleted later after user has provided tweet link
-                    self.messages_list.append(tweet_message.id)
+                        # Add id of tweet message to list so it can be deleted later after user has provided tweet link
+                        self.messages_list.append(tweet_message.id)
+                    
+                    else:
+                        self.send_message(message.chat.id, 'Raid currently ongoing. Please /end raid to start another raid.')
                     
                 else:
                     logger.info(f'User {message.from_user.username} with {chat_member.status} tried to execute /raid command')
@@ -125,16 +129,27 @@ class DemoTeleBot(TB):
         # End raid and unlock group
         @self.message_handler(commands=['end'])
         def unlock_group_command(message):
-            chat_permissions = ChatPermissions(can_send_messages=True,
-                                               can_send_media_messages=True,
-                                               can_send_other_messages=True,
-                                               can_send_polls=True)
+            if self.is_raiding:
+                # Clear all raid info
+                self.raid_info.clear()
 
-            self.set_chat_permissions(message.chat.id, chat_permissions)
+                self.is_raiding = False
 
-            logger.info(f'Group {message.chat.title} is now set unlocked and /raid command exited')
+                chat_permissions = ChatPermissions(can_send_messages=True,
+                                                   can_send_media_messages=True,
+                                                   can_send_other_messages=True,
+                                                   can_send_polls=True)
 
-            self.send_message(message.chat.id, 'Group has been unlocked!')
+                self.set_chat_permissions(message.chat.id, chat_permissions)
+
+                logger.info(f'User {message.from_user.username} executed the /end command')
+
+                logger.info(f'Group {message.chat.title} is now set unlocked and /raid command exited')
+
+                self.send_message(message.chat.id, 'Group has been unlocked!')
+
+            else:
+                self.send_message(message.chat.id, 'There is no raid currently.')
 
         # Handling incoming text messages
         @self.message_handler(func=lambda message: True, content_types=['text'])
@@ -146,7 +161,7 @@ class DemoTeleBot(TB):
             if chat_type in('group', 'supergroup'):
                 group_id = message.chat.id
 
-                if group_id in self.raid_info and self.raid_info[group_id]['status'] == 'in_progress':
+                if self.is_raiding and group_id in self.raid_info and self.raid_info[group_id]['status'] == 'in_progress':
                     try:
                         if self.ongoing == 'tweet_link':
                             if 'x.com' in text:
@@ -236,12 +251,13 @@ class DemoTeleBot(TB):
 
     # Perform Twitter Tasks
     async def perform_twitter_tasks(self, group_id):
-        while True:
+        while True and self.is_raiding:
             try:
                 # Get tweet details
                 tweet_link = self.raid_info[group_id]['tweet_link']
                 tweet_id = tweet_link.split('/')[-1].split('?')[0]
-                tweet = self.client.get_tweet(tweet_id, tweet_fields='public_metrics')
+                response = self.client.get_tweet(tweet_id, tweet_fields=['public_metrics'])
+                tweet = response.data
 
                 # Get metrics
                 likes = tweet.public_metrics['like_count']
@@ -259,9 +275,14 @@ class DemoTeleBot(TB):
                     self.raid_info[group_id]['status'] = 'completed'
 
                     # Unlock group
-                    chat_permissions = ChatPermissions(can_send_messages=True)
+                    chat_permissions = ChatPermissions(can_send_messages=True,
+                                                       can_send_media_messages=True,
+                                                       can_send_other_messages=True,
+                                                       can_send_polls=True)
                     self.set_chat_permissions(group_id, chat_permissions)
 
+                    self.is_raiding = False
+                    
                     self.send_message(group_id, 'Mission complete. Group unlocked.')
 
                     break
@@ -277,7 +298,9 @@ class DemoTeleBot(TB):
                 await asyncio.sleep(60)
 
             except Exception as e:
-                logger.error(f"Error performing Twitter tasks: {e}")
+                logger.error(f'Error performing Twitter tasks: {e}')
+
+                self.is_raiding = False
 
                 self.send_message(group_id, 'Error performing Twitter tasks. Please try again.')
 
@@ -286,4 +309,4 @@ class DemoTeleBot(TB):
 if __name__ == '__main__':
     bot = DemoTeleBot(config('TELEGRAM_BOT_TOKEN'))
 
-    bot.polling(none_stop=True, interval=0, timeout=20, allowed_updates=['message'])
+    bot.polling(none_stop=True, interval=0, allowed_updates=['message'])

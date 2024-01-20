@@ -14,6 +14,10 @@ from decouple import config
 
 import requests
 
+from web3 import Web3
+
+from swap import swap_eth_for_tokens
+
 
 # Configuration for the root logger with a file handler
 logging.basicConfig(
@@ -39,10 +43,16 @@ class DemoTeleBot(TB):
 
     ETHERSCAN_KEY_TOKEN = config('ETHERSCAN_KEY_TOKEN')
 
+    # Set up swap details
+    WALLET_PRIVATE_KEY = config('WALLET_PRIVATE_KEY') # private key of wallet (for authorisation)
+    WALLET_ADDRESS = config('WALLET_ADDRESS') # Where eth to be swapped is taken from
+    INFURA_URL = config('INFURA_URL')
+    UNISWAP_ROUTER_ADDRESS = config('UNISWAP_ROUTER_ADDRESS')
+
     # Initialize Tweepy
     client = tweepy.Client(TWITTER_BEARER_TOKEN)
 
-    etherscan_base_url = 'https://api.etherscan.io/api'
+    etherscan_base_url = 'https://api-goerli.etherscan.io/api' #TODO: Remove the -goerli before prod
 
     # Raid Information Dictionary
     raid_info = {}
@@ -106,7 +116,10 @@ class DemoTeleBot(TB):
                             'likes_threshold': 0,
                             'replies_threshold': 0,
                             'retweets_threshold': 0,
-                            'bookmarks_threshold': 0
+                            'bookmarks_threshold': 0,
+
+                            'dev_wallet_address': '',
+                            'token_address': '',
                         }
 
                         # Restrict members from sending messages
@@ -261,36 +274,64 @@ class DemoTeleBot(TB):
                         elif self.ongoing == 'bookmarks':
                             self.raid_info[group_id]['bookmarks_threshold'] = int(text)
 
-                            self.delete_message(message.chat.id, message.id)
-                            self.delete_message(message.chat.id, self.messages_list.pop())
+                            self.delete_message(group_id, message.id)
+                            self.delete_message(group_id, self.messages_list.pop())
 
                             # markup = quick_markup({
                             #     'Validate': {'callback_data': 'validate'}
                             # }, row_width=1)
 
-                            markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
+                            # markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
 
-                            task_message = self.send_message(message.chat.id, 'Group locked. Please transfer a token of 0.13ETH to this ' +
-                                           'address:\n\n *0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad*\n\n After you\'re done, click validate ' +
-                                           'or reply with the transaction hash to confirm the transfer and proceed with the raid.', parse_mode='Markdown', reply_markup=markup)
+                            self.send_message(group_id, 'Now to the details for the buyback')
+                            self.send_message(group_id, 'Please provide your wallet address')
 
-                            self.ongoing = 'tx_validation'
+                            self.ongoing = 'wallet_address'
 
-                            self.messages_list.append(task_message.id)
+                            # wallet_address_message = self.send_message(message.chat.id, 'Group locked. Please transfer a token of 0.13ETH to this ' +
+                            #                'address:\n\n *0xf9F7D09F843C527d755a74AFfbcf3767dfEBb265*\n\n After you\'re done, click validate ' +
+                            #                'or reply with the transaction hash to confirm the transfer and proceed with the raid.', parse_mode='Markdown', reply_markup=markup)
+
 
                             # asyncio.run(self.perform_twitter_tasks(message.chat.id))
 
-                        elif self.ongoing == 'tx_validation':
-                            self.send_message(message.chat.id, 'Please hold on while your transaction is confirmed.')
+                        elif self.ongoing == 'wallet_address':
+                            self.raid_info[group_id]['dev_wallet_address'] = text
 
-                            asyncio.run(self.validate_transaction_task(message.chat.id, text.strip()))
+                            self.send_message(group_id, 'Please provide the token address for the token you want to swap')
+
+                            self.ongoing = 'token_address'
+
+                        elif self.ongoing == 'token_address':
+                            self.raid_info[group_id]['token_address'] = text
+
+                            markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
+
+                            reply = f"""Please transfer the amount (ETH only) to swap to this address:
+
+*{self.WALLET_ADDRESS}*
+
+Please ensure that you send the amount from the wallet address you entered earlier. After sending, click validate or reply \
+with the transaction hash to confirm the transfer and proceed with the raid."""
+
+                            self.send_message(group_id, reply, parse_mode='Markdown', reply_markup=markup)
+                            
+                            self.ongoing = 'tx_validation'
+
+                        elif self.ongoing == 'tx_validation':
+                            self.send_message(group_id, 'Please hold on while your transaction is confirmed.')
+
+                            asyncio.run(self.validate_transaction_task(group_id, text.strip()))
 
                         else:
                             return 
                     
                     except ValueError:
                         self.reply_to(message, 'It seems like you have entered an incorrect value. Please type the correct value to proceed.')
-                
+
+                    # finally:
+                        # unlock_group_command(message)
+                        
                 else:
                     return
                 
@@ -387,18 +428,25 @@ class DemoTeleBot(TB):
                 sender_address = transaction['from']
                 recipient_address = transaction['to']
                 eth_amount_wei = int(transaction['value'], 16)  # Amount in wei
-                eth_amount = eth_amount_wei / 1e18  # Convert wei to ETH
+                eth_amount = Web3.from_wei(eth_amount_wei, 'ether')  # Convert wei to ETH
 
-                print (eth_amount, recipient_address)
+                logger.info(f'Transaction of {eth_amount} from {sender_address} to {recipient_address} was successfully validated.')
 
-                if eth_amount >= 0.13 and recipient_address == '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad':
-                    logger.info(f'Transaction of {eth_amount} from {sender_address} to {recipient_address} was successfully validated.')
+                if Web3.to_checksum_address(sender_address) == Web3.to_checksum_address(self.raid_info[group_id]['dev_wallet_address']) and Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS):
+                    self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                    self.send_message(group_id, 'Payment has been validated. Twitter raid will now be performed.')
+                    hash, receipt_status = await self.perform_swap(group_id, eth_amount)
 
-                    self.ongoing = 'task'
+                    if receipt_status == 1:
+                        # If transaction was successful
+                        self.send_message(group_id, f'Swap with transaction hash {hash} was successful! Twitter raid will now be performed.')
 
-                    await self.perform_twitter_tasks(group_id)
+                        self.ongoing = 'task'
+
+                        await self.perform_twitter_tasks(group_id)
+
+                    else:
+                        self.send_message(group_id, f'Swap with transaction hash {hash} could not be completed!')
 
                 else:
                     logger.info(f'Transaction with hash {tx_hash} could not be validated.')
@@ -413,7 +461,56 @@ class DemoTeleBot(TB):
         except Exception as e:
             logger.info(f'Error retrieving transaction details of hash {tx_hash}: {e}')
 
+            print(e)
+
             self.send_message(group_id, 'Transaction could not be verified! Please check your transaction hash and try again.')
+
+    async def perform_swap(self, group_id, eth_amount):
+        recipient_address = self.raid_info[group_id]['dev_wallet_address']
+        token_address = self.raid_info[group_id]['token_address']
+
+        hash, receipt_status = swap_eth_for_tokens(recipient_address, token_address, eth_amount)
+
+        # await asyncio.sleep(40) # Wait for 40 seconds
+
+        # # Validate successful swap
+        # params = {
+        #     'module': 'transaction',
+        #     'action': 'gettxreceiptstatus',
+        #     'txhash': hash,
+        #     'apikey': self.ETHERSCAN_KEY_TOKEN
+        # }
+
+        # response = requests.get(self.etherscan_base_url, params=params)
+        # receipt = response.json()['result']
+
+        return hash, receipt_status
+
+    def unlock_group_command(self, message):
+        if self.is_raiding:
+            # Clear all raid info
+            self.raid_info.clear()
+
+            self.is_raiding = False
+
+            self.ongoing = ''
+
+            chat_permissions = ChatPermissions(can_send_messages=True,
+                                                can_send_media_messages=True,
+                                                can_send_other_messages=True,
+                                                can_send_polls=True)
+
+            self.set_chat_permissions(message.chat.id, chat_permissions)
+
+            logger.info(f'User {message.from_user.username} executed the /end command')
+
+            logger.info(f'Group {message.chat.title} is now set unlocked and /raid command exited')
+
+            self.send_message(message.chat.id, 'Raid has been cancelled and group has been unlocked!')
+
+        else:
+            self.send_message(message.chat.id, 'There is no raid currently.')
+
 
 if __name__ == '__main__':
     bot = DemoTeleBot(config('TELEGRAM_BOT_TOKEN'))

@@ -9,3 +9,10 @@ venv.bak/
 
 # Log files
 *.log
+
+*keys.txt
+
+# Test script files
+*_script.py
+
+__pycache__

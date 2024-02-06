@@ -8,6 +8,10 @@ import logging
 
 import time
 
+from swaps.models import Swap
+
+from asgiref.sync import sync_to_async
+
 
 # Configuration for the root logger with a file handler
 logging.basicConfig(
@@ -21,7 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
     
-def swap_eth_for_tokens(recipient_address, token_contract_address, amount_to_swap):
+def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, amount_to_swap):
+    swap = Swap.objects.get(origin_hash=origin_hash)
+
     private_key = config('WALLET_PRIVATE_KEY') # private key of wallet (for authorisation)
     wallet_address = config('WALLET_ADDRESS') # Where eth to be swapped is taken from
     infura_url = config('INFURA_URL')
@@ -31,7 +37,11 @@ def swap_eth_for_tokens(recipient_address, token_contract_address, amount_to_swa
 
     wallet_balance_wei = web3.eth.get_balance(wallet_address)
     wallet_balance_eth = web3.from_wei(wallet_balance_wei, 'ether')
-    logger.info(f'The balance of {wallet_address} is {wallet_balance_eth}ETH')
+
+    swap.wallet_balance_before = wallet_balance_eth
+    swap.save()
+
+    logger.info(f'The balance of {wallet_address} before swap is {wallet_balance_eth}ETH')
 
     nonce = web3.eth.get_transaction_count(wallet_address) # Equivalent of an id in a database
     gas_price = web3.eth.gas_price
@@ -76,6 +86,14 @@ def swap_eth_for_tokens(recipient_address, token_contract_address, amount_to_swa
     time.sleep(40) # Wait for 40 seconds 
 
     receipt = web3.eth.get_transaction_receipt(web3.to_hex(transaction_hash))
+
+    wallet_balance_wei_after = web3.eth.get_balance(wallet_address)
+    wallet_balance_eth_after = web3.from_wei(wallet_balance_wei_after, 'ether')
+
+    swap.wallet_balance_after = wallet_balance_eth_after
+    swap.swap_hash = web3.to_hex(transaction_hash)
+    swap.is_successful = receipt.get('status', 0)
+    swap.save()
 
     logger.info(f'Swapped {amount_to_swap}ETH to tokens with contract_address {token_contract_address} with transaction hash {web3.to_hex(transaction_hash)} and receipt status {receipt.get("status", 0)}')
 

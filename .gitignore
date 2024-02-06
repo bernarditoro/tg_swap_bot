@@ -15,4 +15,12 @@ venv.bak/
 # Test script files
 *_script.py
 
-__pycache__
+### Django ###
+*.pot
+*.pyc
+__pycache__/
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media
+migrations

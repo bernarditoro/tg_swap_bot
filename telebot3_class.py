@@ -6,6 +6,8 @@ import tweepy
 
 import asyncio
 
+from asgiref.sync import sync_to_async
+
 # from typing import Final
 
 import logging
@@ -16,7 +18,19 @@ import requests
 
 from web3 import Web3
 
-from swap import swap_eth_for_tokens
+import os
+
+import django
+from django.db import IntegrityError
+
+# Set the DJANGO_SETTINGS_MODULE environment variable
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'jpegdude.settings')
+
+# Configure Django
+django.setup()
+
+from swaps.swap import swap_eth_for_tokens
+from swaps.models import Swap
 
 
 # Configuration for the root logger with a file handler
@@ -43,11 +57,7 @@ class DemoTeleBot(TB):
 
     ETHERSCAN_KEY_TOKEN = config('ETHERSCAN_KEY_TOKEN')
 
-    # Set up swap details
-    WALLET_PRIVATE_KEY = config('WALLET_PRIVATE_KEY') # private key of wallet (for authorisation)
-    WALLET_ADDRESS = config('WALLET_ADDRESS') # Where eth to be swapped is taken from
-    INFURA_URL = config('INFURA_URL')
-    UNISWAP_ROUTER_ADDRESS = config('UNISWAP_ROUTER_ADDRESS')
+    WALLET_ADDRESS = config('WALLET_ADDRESS')
 
     # Initialize Tweepy
     client = tweepy.Client(TWITTER_BEARER_TOKEN)
@@ -65,9 +75,6 @@ class DemoTeleBot(TB):
 
     # This field tracks if the bot is currently on a raid or not
     is_raiding = False
-
-    # Transaction details
-    tnx_details = {}
 
     def register_message_handlers(self):
         # Start command
@@ -193,8 +200,6 @@ class DemoTeleBot(TB):
         # Validate eth tnx
         @self.callback_query_handler(func=lambda call: True)
         def validate_transaction_command(call):
-            print ('Executed!')
-
             if self.is_raiding and call.data == 'validate':
                 message = call.message
 
@@ -208,10 +213,12 @@ class DemoTeleBot(TB):
         @self.message_handler(func=lambda message: True, content_types=['text'])
         def handle_message(message):
             chat_type = message.chat.type
-            
-            text = message.text
 
-            if chat_type in('group', 'supergroup'):
+            text = message.text.strip()
+
+            print(f'{message.from_user.username} said: {text}')
+
+            if chat_type in ('group', 'supergroup'):
                 group_id = message.chat.id
 
                 if self.is_raiding and group_id in self.raid_info and self.raid_info[group_id]['status'] == 'in_progress':
@@ -277,46 +284,63 @@ class DemoTeleBot(TB):
                             self.delete_message(group_id, message.id)
                             self.delete_message(group_id, self.messages_list.pop())
 
-                            # markup = quick_markup({
-                            #     'Validate': {'callback_data': 'validate'}
-                            # }, row_width=1)
-
-                            # markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
-
                             self.send_message(group_id, 'Now to the details for the buyback')
                             self.send_message(group_id, 'Please provide your wallet address')
 
                             self.ongoing = 'wallet_address'
 
-                            # wallet_address_message = self.send_message(message.chat.id, 'Group locked. Please transfer a token of 0.13ETH to this ' +
-                            #                'address:\n\n *0xf9F7D09F843C527d755a74AFfbcf3767dfEBb265*\n\n After you\'re done, click validate ' +
-                            #                'or reply with the transaction hash to confirm the transfer and proceed with the raid.', parse_mode='Markdown', reply_markup=markup)
-
-
-                            # asyncio.run(self.perform_twitter_tasks(message.chat.id))
-
                         elif self.ongoing == 'wallet_address':
-                            self.raid_info[group_id]['dev_wallet_address'] = text
+                            if text.startswith('0x'):
+                                self.raid_info[group_id]['dev_wallet_address'] = text
 
-                            self.send_message(group_id, 'Please provide the token address for the token you want to swap')
+                                self.send_message(group_id, 'Please provide the token address for the token you want to swap')
 
-                            self.ongoing = 'token_address'
+                                self.ongoing = 'token_address'
+
+                            else:
+                                self.reply_to(message, 'Please enter a correct address.')
 
                         elif self.ongoing == 'token_address':
-                            self.raid_info[group_id]['token_address'] = text
+                            if text.startswith('0x'):
+                                self.raid_info[group_id]['token_address'] = text
 
-                            markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
+                                reply = f"""Do you want to swap ETH from *{self.raid_info[group_id]['dev_wallet_address']}* to token with token address: *{text}*?
+                            
+Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap."""
 
-                            reply = f"""Please transfer the amount (ETH only) to swap to this address:
+                                self.send_message(group_id, reply, parse_mode='Markdown')
+
+                                self.ongoing = 'swap_confirmation'
+                            
+                            else:
+                                self.reply_to(message, 'Please enter a correct address.')
+                        
+                        elif self.ongoing == 'swap_confirmation':
+
+                            text = text.lower()
+
+                            if text == 'yes':
+
+                                markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
+
+                                reply = f"""Please transfer the amount of ETH you want to swap to this address:
 
 *{self.WALLET_ADDRESS}*
 
 Please ensure that you send the amount from the wallet address you entered earlier. After sending, click validate or reply \
 with the transaction hash to confirm the transfer and proceed with the raid."""
 
-                            self.send_message(group_id, reply, parse_mode='Markdown', reply_markup=markup)
-                            
-                            self.ongoing = 'tx_validation'
+                                self.send_message(group_id, reply, parse_mode='Markdown', reply_markup=markup)
+                                
+                                self.ongoing = 'tx_validation'
+
+                            elif text == 'edit':
+                                self.send_message(group_id, 'Please provide your wallet address')
+
+                                self.ongoing = 'wallet_address'
+
+                            else:
+                                self.send_message(group_id, 'Please reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap.')
 
                         elif self.ongoing == 'tx_validation':
                             self.send_message(group_id, 'Please hold on while your transaction is confirmed.')
@@ -345,10 +369,30 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
 
     # Perform Twitter Tasks
     async def perform_twitter_tasks(self, group_id):
-        while True and self.is_raiding:
+        raid_group = self.raid_info[group_id]
+
+        likes_required = raid_group['likes_threshold']
+        replies_required = raid_group['replies_threshold']
+        retweets_required = raid_group['retweets_threshold']
+        bookmarks_required = raid_group['bookmarks_threshold']
+        tweet_link = raid_group['tweet_link']
+
+        # Send message to trends group
+#         message = f"""*The jpegdude bot has been activated by --.* The target is {likes_required} likes,
+# {replies_required} replies, {retweets_required} retweets, {bookmarks_required} bookmarks. Help them
+# achieve their goal here:
+
+# {tweet_link}"""
+        
+#         try:
+#             self.send_message(config('TRENDS_GROUP_ID', cast=int), message, parse_mode='Markdown')
+
+#         except Exception as e:
+#             logger.error(f'Error while sending raid info to trends group: {e}')
+
+        while self.is_raiding:
             try:
                 # Get tweet details
-                tweet_link = self.raid_info[group_id]['tweet_link']
                 tweet_id = tweet_link.split('/')[-1].split('?')[0]
                 response = self.client.get_tweet(tweet_id, tweet_fields=['public_metrics'])
                 tweet = response.data
@@ -361,12 +405,12 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
 
                 # Check if thresholds are reached
                 if (
-                    likes >= self.raid_info[group_id]['likes_threshold'] and
-                    replies >= self.raid_info[group_id]['replies_threshold'] and
-                    retweets >= self.raid_info[group_id]['retweets_threshold'] and
-                    bookmarks >= self.raid_info[group_id]['bookmarks_threshold']
+                    likes >= likes_required and
+                    replies >= replies_required and
+                    retweets >= retweets_required and
+                    bookmarks >= bookmarks_required
                 ):
-                    self.raid_info[group_id]['status'] = 'completed'
+                    raid_group['status'] = 'completed'
 
                     # Unlock group
                     chat_permissions = ChatPermissions(can_send_messages=True,
@@ -383,11 +427,13 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
 
                 else:
                     text = f"""*RAID IN PROGRESS*\n
-*Tweet link:* {self.raid_info[group_id]['tweet_link']}\n
-*Current likes:* {likes} | \U0001f3af {self.raid_info[group_id]['likes_threshold']}
-*Current replies:* {replies} | \U0001f3af {self.raid_info[group_id]['replies_threshold']}
-*Current reposts:* {retweets} | \U0001f3af {self.raid_info[group_id]['retweets_threshold']}
-*Current bookmarks:* {bookmarks} | \U0001f3af {self.raid_info[group_id]['bookmarks_threshold']}"""
+*Tweet link:* {tweet_link}\n
+*Current likes:* {likes} | \U0001f3af {likes_required}
+*Current replies:* {replies} | \U0001f3af {replies_required}
+*Current reposts:* {retweets} | \U0001f3af {retweets_required}
+*Current bookmarks:* {bookmarks} | \U0001f3af {bookmarks_required}
+
+[Jpegdude Trending]({self.get_chat(config('TRENDS_GROUP_ID').invite_link)})"""
                     
                     advertisement_markup = quick_markup({
                         'Sample Advertisement': {'url': 'sample.com'}
@@ -402,9 +448,9 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
             except Exception as e:
                 logger.error(f'Error performing Twitter tasks: {e}')
 
-                self.is_raiding = False
-
                 self.send_message(group_id, 'Error performing Twitter tasks. Please try again.')
+
+                self.unlock_group_command(group_id)
 
                 break
 
@@ -433,20 +479,26 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                 logger.info(f'Transaction of {eth_amount} from {sender_address} to {recipient_address} was successfully validated.')
 
                 if Web3.to_checksum_address(sender_address) == Web3.to_checksum_address(self.raid_info[group_id]['dev_wallet_address']) and Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS):
+                    # Create swap record 
+                    self.swap = await Swap.objects.aget_or_create(destination_address=sender_address,
+                                                                  token_address=self.raid_info[group_id]['token_address'],
+                                                                  origin_hash=tx_hash,
+                                                                  is_successful=False)
+                    
                     self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                    hash, receipt_status = await self.perform_swap(group_id, eth_amount)
+                    hash, receipt_status = await self.perform_swap(tx_hash, group_id, eth_amount)
 
                     if receipt_status == 1:
                         # If transaction was successful
-                        self.send_message(group_id, f'Swap with transaction hash {hash} was successful! Twitter raid will now be performed.')
+                        self.send_message(group_id, f'Swap with transaction hash *{hash}* was successful!\n\nTwitter raid will now be performed.', parse_mode='Markdown')
 
                         self.ongoing = 'task'
 
                         await self.perform_twitter_tasks(group_id)
 
                     else:
-                        self.send_message(group_id, f'Swap with transaction hash {hash} could not be completed!')
+                        self.send_message(group_id, f'Swap with transaction hash *{hash}* could not be completed!', parse_mode='Markdown')
 
                 else:
                     logger.info(f'Transaction with hash {tx_hash} could not be validated.')
@@ -454,39 +506,31 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                     self.send_message(group_id, f'Transaction with hash {tx_hash} could not be validated. Please check your transaction hash and try again.')
 
             else:
-                logger.info(f'Error retrieving transaction details with hash {tx_hash}')
+                logger.error(f'Error retrieving transaction details with hash {tx_hash}')
 
                 self.send_message(group_id, 'It seems the transaction hash is incorrect. Could you try again with a correct transaction hash?')
 
+        except IntegrityError as e:
+            logger.error(f'Error creating a swap record: {e}')
+
+            self.send_message(group_id, 'It seems this transaction hash has been used to process a swap before. Please reach out to an admin for further assistance.')
+
         except Exception as e:
-            logger.info(f'Error retrieving transaction details of hash {tx_hash}: {e}')
+            logger.error(f'Error retrieving transaction details of hash {tx_hash}: ({type(e)}, {e}')
 
             print(e)
 
             self.send_message(group_id, 'Transaction could not be verified! Please check your transaction hash and try again.')
 
-    async def perform_swap(self, group_id, eth_amount):
+    async def perform_swap(self, origin_hash, group_id, eth_amount):
         recipient_address = self.raid_info[group_id]['dev_wallet_address']
         token_address = self.raid_info[group_id]['token_address']
 
-        hash, receipt_status = swap_eth_for_tokens(recipient_address, token_address, eth_amount)
-
-        # await asyncio.sleep(40) # Wait for 40 seconds
-
-        # # Validate successful swap
-        # params = {
-        #     'module': 'transaction',
-        #     'action': 'gettxreceiptstatus',
-        #     'txhash': hash,
-        #     'apikey': self.ETHERSCAN_KEY_TOKEN
-        # }
-
-        # response = requests.get(self.etherscan_base_url, params=params)
-        # receipt = response.json()['result']
+        hash, receipt_status = await sync_to_async(swap_eth_for_tokens)(origin_hash, recipient_address, token_address, eth_amount)
 
         return hash, receipt_status
 
-    def unlock_group_command(self, message):
+    def unlock_group_command(self, group_id):
         if self.is_raiding:
             # Clear all raid info
             self.raid_info.clear()
@@ -500,16 +544,12 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                                                 can_send_other_messages=True,
                                                 can_send_polls=True)
 
-            self.set_chat_permissions(message.chat.id, chat_permissions)
+            self.set_chat_permissions(group_id, chat_permissions)
 
-            logger.info(f'User {message.from_user.username} executed the /end command')
-
-            logger.info(f'Group {message.chat.title} is now set unlocked and /raid command exited')
-
-            self.send_message(message.chat.id, 'Raid has been cancelled and group has been unlocked!')
+            self.send_message(group_id, 'Raid has been cancelled and group has been unlocked!')
 
         else:
-            self.send_message(message.chat.id, 'There is no raid currently.')
+            self.send_message(group_id, 'There is no raid currently.')
 
 
 if __name__ == '__main__':

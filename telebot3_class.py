@@ -216,7 +216,7 @@ class DemoTeleBot(TB):
 
             text = message.text.strip()
 
-            print(f'{message.from_user.username} said: {text}')
+            # print(f'{message.from_user.username} said: {text}')
 
             if chat_type in ('group', 'supergroup'):
                 group_id = message.chat.id
@@ -224,7 +224,7 @@ class DemoTeleBot(TB):
                 if self.is_raiding and group_id in self.raid_info and self.raid_info[group_id]['status'] == 'in_progress':
                     try:
                         if self.ongoing == 'tweet_link':
-                            if text.strip().startswith('https://x.com') or text.strip().startswith('https://twitter.com'):
+                            if text.startswith('https://x.com') or text.startswith('https://twitter.com'):
                                 self.raid_info[group_id]['tweet_link'] = text
 
                                 # Delete the tweet message and tweet link
@@ -345,7 +345,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                         elif self.ongoing == 'tx_validation':
                             self.send_message(group_id, 'Please hold on while your transaction is confirmed.')
 
-                            asyncio.run(self.validate_transaction_task(group_id, text.strip()))
+                            asyncio.run(self.validate_transaction_task(group_id, text))
 
                         else:
                             return 
@@ -413,15 +413,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                     raid_group['status'] = 'completed'
 
                     # Unlock group
-                    chat_permissions = ChatPermissions(can_send_messages=True,
-                                                       can_send_media_messages=True,
-                                                       can_send_other_messages=True,
-                                                       can_send_polls=True)
-                    self.set_chat_permissions(group_id, chat_permissions)
-
-                    self.is_raiding = False
-                    
-                    self.send_message(group_id, 'Raid complete. Group has been unlocked.')
+                    self.unlock_group_command(group_id)
 
                     break
 
@@ -436,7 +428,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
 [Jpegdude Trending]({self.get_chat(config('TRENDS_GROUP_ID').invite_link)})"""
                     
                     advertisement_markup = quick_markup({
-                        'Sample Advertisement': {'url': 'sample.com'}
+                        'Sample Advertisement': {'url': '#'}
                     })
 
                     # Reply with processing status
@@ -478,7 +470,8 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
 
                 logger.info(f'Transaction of {eth_amount} from {sender_address} to {recipient_address} was successfully validated.')
 
-                if Web3.to_checksum_address(sender_address) == Web3.to_checksum_address(self.raid_info[group_id]['dev_wallet_address']) and Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS):
+                if (Web3.to_checksum_address(sender_address) == Web3.to_checksum_address(self.raid_info[group_id]['dev_wallet_address']) and
+                    Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS)):
                     # Create swap record 
                     self.swap = await Swap.objects.aget_or_create(destination_address=sender_address,
                                                                   token_address=self.raid_info[group_id]['token_address'],
@@ -501,7 +494,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                         self.send_message(group_id, f'Swap with transaction hash *{hash}* could not be completed!', parse_mode='Markdown')
 
                 else:
-                    logger.info(f'Transaction with hash {tx_hash} could not be validated.')
+                    logger.info(f'Transaction with hash {tx_hash} could not be validated due to unmatching variables.')
 
                     self.send_message(group_id, f'Transaction with hash {tx_hash} could not be validated. Please check your transaction hash and try again.')
 
@@ -540,9 +533,9 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
             self.ongoing = ''
 
             chat_permissions = ChatPermissions(can_send_messages=True,
-                                                can_send_media_messages=True,
-                                                can_send_other_messages=True,
-                                                can_send_polls=True)
+                                               can_send_media_messages=True,
+                                               can_send_other_messages=True,
+                                               can_send_polls=True)
 
             self.set_chat_permissions(group_id, chat_permissions)
 

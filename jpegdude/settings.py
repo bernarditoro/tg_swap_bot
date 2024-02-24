@@ -43,6 +43,7 @@ INSTALLED_APPS = [
 
     'swaps.apps.SwapsConfig',
     'users.apps.UsersConfig',
+    'ads.apps.AdsConfig',
 ]
 
 MIDDLEWARE = [

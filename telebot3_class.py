@@ -1,5 +1,5 @@
 from telebot import TeleBot as TB
-from telebot.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ChatPermissions
 from telebot.util import quick_markup
 
 import tweepy
@@ -23,6 +23,9 @@ import os
 import django
 from django.db import IntegrityError
 
+from datetime import datetime, timedelta
+
+
 # Set the DJANGO_SETTINGS_MODULE environment variable
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'jpegdude.settings')
 
@@ -31,6 +34,9 @@ django.setup()
 
 from swaps.swap import swap_eth_for_tokens
 from swaps.models import Swap
+
+from ads.ads import choose_ad
+from ads.models import Ad
 
 
 # Configuration for the root logger with a file handler
@@ -67,6 +73,14 @@ class DemoTeleBot(TB):
     # Raid Information Dictionary
     raid_info = {}
 
+    ad_info = {}
+
+    ad_prices = {
+        '2': 0.3,
+        '3': 0.5,
+        '4': 0.65
+    }
+
     # List of ids of messages to be deleted
     messages_list = []
 
@@ -76,16 +90,16 @@ class DemoTeleBot(TB):
     # This field tracks if the bot is currently on a raid or not
     is_raiding = False
 
+    is_registering_ad = False
+
     def register_message_handlers(self):
         # Start command
         @self.message_handler(commands=['start'])
         def start_command(message):
-            keyboard = InlineKeyboardMarkup()
-            command_button = InlineKeyboardButton(text='Perform Raid', callback_data='raid')
-            keyboard.add(command_button)
-
+            ad = choose_ad()
+            
             markup = quick_markup({
-                'Advertise': {'callback_data': 'advertise'}
+                ad.ad_text: {'url': ad.external_link}
             }, row_width=1)
 
             text = """Hi there! I am jpegdude! Here is how you can utilise my functions:\n
@@ -99,7 +113,7 @@ class DemoTeleBot(TB):
 
 5\u20e3 For advertisement packages, enter /advertise."""
 
-            self.send_message(message.chat.id, text)
+            self.send_message(message.chat.id, text, reply_markup=markup)
 
         # Raid command
         @self.message_handler(commands=['raid'])
@@ -196,19 +210,73 @@ class DemoTeleBot(TB):
 
             else:
                 self.send_message(message.chat.id, 'There is no raid currently.')
+        
+        # Cancel ad
+        @self.message_handler(commands=['cancel'])
+        def cancel_ad(message):
+            if self.is_registering_ad:
+                self.ad_info.clear()
 
-        # Validate eth tnx
+                self.ongoing = ''
+
+                self.is_registering_ad = False
+
+                self.send_message(message.chat.id, 'Ad has been cancelled. Tap /advertise to start a new ad or continue with an uncompleted ad')
+
+            else:
+                self.send_message(message.chat.id, 'There is no ad to cancel')
+
+        @self.message_handler(commands=['advertise'])
+        def advertise(message):
+            if message.chat.type.lower() == 'private':
+                markup = quick_markup({
+                    '2 Days: 0.3ETH': {'callback_data': '2_days_ad'},
+                    '3 Days: 0.5ETH': {'callback_data': '3_days_ad'},
+                    '4 Days: 0.65ETH': {'callback_data': '4_days_ad'},
+                }, row_width=1)
+
+                reply = """Get your project on Jpegdude bot Trending!
+
+Your project will be displayed in the trending group for the selected duration:"""
+
+                self.send_message(message.chat.id, reply, reply_markup=markup)
+
+            else:
+                self.send_message(message.chat.id, 'This command can only be used in a private chat')
+
         @self.callback_query_handler(func=lambda call: True)
-        def validate_transaction_command(call):
-            if self.is_raiding and call.data == 'validate':
-                message = call.message
+        def handle_callback_queries(call):
+            chat_id = call.message.chat.id
 
-                print('This is the message: ', message)
+            text = call.data
 
-                self.ongoing = 'tnx_validation'
+            if 'days_ad' in text:
+                self.ad_info[chat_id] = {
+                    'number_of_days': None,
+                    'username': None,
+                    'ad_text': None,
+                    'link': None
+                }
 
-                self.send_message(message.chat.id, 'Please provide your transaction hash.')
-            
+                number_of_days = text[0]
+
+                self.ad_info[chat_id]['number_of_days'] = int(number_of_days)
+
+                message = self.send_message(chat_id, 'Please enter your username so we can contact you')
+                self.messages_list.append(message.id)
+
+                self.ongoing = 'ad_username'
+
+                self.is_registering_ad = True
+
+                #TODO: Answer the query
+
+                # updated_inline_keyboard = InlineKeyboardMarkup()
+                # button = InlineKeyboardButton("Try Callback Again", callback_data="try_callback_again")
+                # updated_inline_keyboard.add(button)
+
+                # self.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=updated_inline_keyboard)
+        
         # Handling incoming text messages
         @self.message_handler(func=lambda message: True, content_types=['text'])
         def handle_message(message):
@@ -216,20 +284,23 @@ class DemoTeleBot(TB):
 
             text = message.text.strip()
 
+            chat_id = message.chat.id
+
+            def delete_messages(message):
+                # Delete the tweet message and tweet link
+                self.delete_message(chat_id, message.id)
+                self.delete_message(chat_id, self.messages_list.pop())
+
             # print(f'{message.from_user.username} said: {text}')
 
             if chat_type in ('group', 'supergroup'):
-                group_id = message.chat.id
-
-                if self.is_raiding and group_id in self.raid_info and self.raid_info[group_id]['status'] == 'in_progress':
+                if self.is_raiding and chat_id in self.raid_info and self.raid_info[chat_id]['status'] == 'in_progress':
                     try:
                         if self.ongoing == 'tweet_link':
                             if text.startswith('https://x.com') or text.startswith('https://twitter.com'):
-                                self.raid_info[group_id]['tweet_link'] = text
+                                self.raid_info[chat_id]['tweet_link'] = text
 
-                                # Delete the tweet message and tweet link
-                                self.delete_message(message.chat.id, message.id)
-                                self.delete_message(message.chat.id, self.messages_list.pop())
+                                delete_messages(message)
                                 
                                 likes_message = self.send_message(message.chat.id, 'Please provide the number of likes needed:')
 
@@ -243,10 +314,9 @@ class DemoTeleBot(TB):
                                 return
 
                         elif self.ongoing == 'likes':
-                            self.raid_info[group_id]['likes_threshold'] = int(text)
+                            self.raid_info[chat_id]['likes_threshold'] = int(text)
 
-                            self.delete_message(message.chat.id, message.id)
-                            self.delete_message(message.chat.id, self.messages_list.pop())
+                            delete_messages(message)
 
                             replies_message = self.send_message(message.chat.id, 'Please provide number of replies needed:')
 
@@ -255,10 +325,9 @@ class DemoTeleBot(TB):
                             self.messages_list.append(replies_message.id)
 
                         elif self.ongoing == 'replies':
-                            self.raid_info[group_id]['replies_threshold'] = int(text)
+                            self.raid_info[chat_id]['replies_threshold'] = int(text)
 
-                            self.delete_message(message.chat.id, message.id)
-                            self.delete_message(message.chat.id, self.messages_list.pop())
+                            delete_messages(message)
 
                             retweets_message = self.send_message(message.chat.id, 'Please provide number of retweets needed:')
 
@@ -267,10 +336,9 @@ class DemoTeleBot(TB):
                             self.messages_list.append(retweets_message.id)
 
                         elif self.ongoing == 'retweets':
-                            self.raid_info[group_id]['retweets_threshold'] = int(text)
+                            self.raid_info[chat_id]['retweets_threshold'] = int(text)
 
-                            self.delete_message(message.chat.id, message.id)
-                            self.delete_message(message.chat.id, self.messages_list.pop())
+                            delete_messages(message)
 
                             bookmarks_message = self.send_message(message.chat.id, 'Please provide number of bookmarks needed:')
 
@@ -279,21 +347,20 @@ class DemoTeleBot(TB):
                             self.messages_list.append(bookmarks_message.id)
 
                         elif self.ongoing == 'bookmarks':
-                            self.raid_info[group_id]['bookmarks_threshold'] = int(text)
+                            self.raid_info[chat_id]['bookmarks_threshold'] = int(text)
 
-                            self.delete_message(group_id, message.id)
-                            self.delete_message(group_id, self.messages_list.pop())
+                            delete_messages(message)
 
-                            self.send_message(group_id, 'Now to the details for the buyback')
-                            self.send_message(group_id, 'Please provide your wallet address')
+                            self.send_message(chat_id, 'Now to the details for the buyback')
+                            self.send_message(chat_id, 'Please provide your wallet address')
 
                             self.ongoing = 'wallet_address'
 
                         elif self.ongoing == 'wallet_address':
                             if text.startswith('0x'):
-                                self.raid_info[group_id]['dev_wallet_address'] = text
+                                self.raid_info[chat_id]['dev_wallet_address'] = text
 
-                                self.send_message(group_id, 'Please provide the token address for the token you want to swap')
+                                self.send_message(chat_id, 'Please provide the token address for the token you want to swap')
 
                                 self.ongoing = 'token_address'
 
@@ -302,13 +369,13 @@ class DemoTeleBot(TB):
 
                         elif self.ongoing == 'token_address':
                             if text.startswith('0x'):
-                                self.raid_info[group_id]['token_address'] = text
+                                self.raid_info[chat_id]['token_address'] = text
 
-                                reply = f"""Do you want to swap ETH from *{self.raid_info[group_id]['dev_wallet_address']}* to token with token address: *{text}*?
+                                reply = f"""Do you want to swap ETH from *{self.raid_info[chat_id]['dev_wallet_address']}* to token with token address: *{text}*?
                             
 Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap."""
 
-                                self.send_message(group_id, reply, parse_mode='Markdown')
+                                self.send_message(chat_id, reply, parse_mode='Markdown')
 
                                 self.ongoing = 'swap_confirmation'
                             
@@ -316,36 +383,32 @@ Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel
                                 self.reply_to(message, 'Please enter a correct address.')
                         
                         elif self.ongoing == 'swap_confirmation':
-
                             text = text.lower()
 
                             if text == 'yes':
-
-                                markup = InlineKeyboardMarkup().row(InlineKeyboardButton('Validate Payment', callback_data='validate'))
-
                                 reply = f"""Please transfer the amount of ETH you want to swap to this address:
 
 *{self.WALLET_ADDRESS}*
 
-Please ensure that you send the amount from the wallet address you entered earlier. After sending, click validate or reply \
+Please ensure that you send the amount from the wallet address you entered earlier. After sending, reply \
 with the transaction hash to confirm the transfer and proceed with the raid."""
 
-                                self.send_message(group_id, reply, parse_mode='Markdown', reply_markup=markup)
+                                self.send_message(chat_id, reply, parse_mode='Markdown', reply_markup=markup)
                                 
                                 self.ongoing = 'tx_validation'
 
                             elif text == 'edit':
-                                self.send_message(group_id, 'Please provide your wallet address')
+                                self.send_message(chat_id, 'Please provide your wallet address')
 
                                 self.ongoing = 'wallet_address'
 
                             else:
-                                self.send_message(group_id, 'Please reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap.')
+                                self.send_message(chat_id, 'Please reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap.')
 
                         elif self.ongoing == 'tx_validation':
-                            self.send_message(group_id, 'Please hold on while your transaction is confirmed.')
+                            self.send_message(chat_id, 'Please hold on while your transaction is confirmed.')
 
-                            asyncio.run(self.validate_transaction_task(group_id, text))
+                            asyncio.run(self.validate_swap_transaction_task(chat_id, text))
 
                         else:
                             return 
@@ -359,13 +422,78 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                 else:
                     return
                 
-            else:
-                # TODO: Define handle_response function
-                # response = handle_response(text)
+            elif chat_type in ('private'):
+                if self.is_registering_ad:
+                    if self.ongoing == 'ad_username':
+                        self.ad_info[chat_id]['username'] = text
 
-                # print('Bot:', response)
+                        delete_messages(message)
 
-                return
+                        ad_text_message = self.send_message(chat_id, 'Enter your ad text. It should be short and brief.')
+                        self.messages_list.append(ad_text_message.id)
+
+                        self.ongoing = 'ad_text'
+                    
+                    elif self.ongoing == 'ad_text':
+                        self.ad_info[chat_id]['ad_text'] = text
+
+                        delete_messages(message)
+
+                        link_message = self.send_message(chat_id, 'Please enter the link your ad should redirect to')
+                        self.messages_list.append(link_message.id)
+
+                        self.ongoing = 'ad_link'
+
+                    elif self.ongoing == 'ad_link':
+                        self.ad_info[chat_id]['link'] = text
+
+                        delete_messages(message)
+
+                        reply = f"""Okay. So if I'm getting this all right, these are your ad details:
+
+    Telegram username: _{self.ad_info[chat_id]['username']}_
+    Ad Text: _{self.ad_info[chat_id]['ad_text']}_
+    Ad Link: _{self.ad_info[chat_id]['link']}_
+
+    Attached below is how your ad should appear when it is running.
+
+    Reply with _Proceed_ to proceed, or _Edit_ to edit your ad details. Tap /cancel to cancel ad."""
+                        
+                        markup = quick_markup({
+                            f"{self.ad_info[chat_id]['ad_text']}": {'url': self.ad_info[chat_id]['link']}
+                        })
+
+                        self.send_message(chat_id, reply, reply_markup=markup, parse_mode='Markdown')
+
+                        self.ongoing = 'ad_confirm'
+
+                    elif self.ongoing == 'ad_confirm':
+                        if text.lower() == 'proceed':
+                            reply = f"""Please transfer {self.ad_prices[str(self.ad_info[chat_id]['number_of_days'])]}ETH to this address:
+
+    *{self.WALLET_ADDRESS}*
+
+    After sending, reply with the transaction hash to confirm the transfer and proceed with the ad."""
+                        
+                            self.send_message(chat_id, reply, parse_mode='Markdown')
+
+                            self.ongoing = 'ad_validation'
+
+                        elif text.lower() == 'edit':
+                            username_message = self.send_message(chat_id, 'Please enter your username so we can contact you')
+                            self.messages_list.append(username_message.id)
+
+                            self.ongoing = 'ad_username'
+
+                        else:
+                            self.send_message(chat_id, 'Your input is not recognised. Please enter _Proceed_ to proceed, or _Edit_ to edit the ad, or /cancel to cancel the ad', parse_mode='Markdown')
+                    
+                    elif self.ongoing == 'ad_validation':
+                        if text.startswith('0x'):
+                            asyncio.run(self.validate_ad_transaction_task(chat_id, text, self.ad_info))
+                        
+                        else:
+                            self.send_message(chat_id, 'You have entered an incorrect hash. Please enter a correct hash')
 
     # Perform Twitter Tasks
     async def perform_twitter_tasks(self, group_id):
@@ -378,17 +506,17 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
         tweet_link = raid_group['tweet_link']
 
         # Send message to trends group
-#         message = f"""*The jpegdude bot has been activated by --.* The target is {likes_required} likes,
-# {replies_required} replies, {retweets_required} retweets, {bookmarks_required} bookmarks. Help them
-# achieve their goal here:
+        message = f"""*The jpegdude bot has been activated by --.* The target is {likes_required} likes,
+{replies_required} replies, {retweets_required} retweets, {bookmarks_required} bookmarks. Help them
+achieve their goal here:
 
-# {tweet_link}"""
+{tweet_link}"""
         
-#         try:
-#             self.send_message(config('TRENDS_GROUP_ID', cast=int), message, parse_mode='Markdown')
+        try:
+            self.send_message(config('TRENDS_GROUP_ID', cast=int), message, parse_mode='Markdown')
 
-#         except Exception as e:
-#             logger.error(f'Error while sending raid info to trends group: {e}')
+        except Exception as e:
+            logger.error(f'Error while sending raid info to trends group: {e}')
 
         while self.is_raiding:
             try:
@@ -447,7 +575,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                 break
 
     # Validate eth tnx
-    async def validate_transaction_task(self, group_id, tx_hash):
+    async def validate_swap_transaction_task(self, group_id, tx_hash):
         # Connect to etherscan api and get transaction details
         params = {
             'module': 'proxy',
@@ -460,7 +588,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
             response = requests.get(self.etherscan_base_url, params=params)
             result = response.json()
 
-            if result.get('status', '1') == '1' or result.get('error', True):
+            if result.get('result', 'None') or result.get('error', True):
                 transaction = result['result']
 
                 sender_address = transaction['from']
@@ -544,8 +672,113 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
         else:
             self.send_message(group_id, 'There is no raid currently.')
 
+    async def validate_ad_transaction_task(self, chat_id, tx_hash: str, ad_info: dict):
+        # Connect to etherscan api and get transaction details
+        params = {
+            'module': 'transaction', # 'proxy',
+            'action': 'gettxreceiptstatus', # 'eth_getTransactionByHash',
+            'txhash': tx_hash,
+            'apikey': self.ETHERSCAN_KEY_TOKEN
+        }
+
+        try:
+            # Check the receipt if the transaction was successful
+            response = requests.get(self.etherscan_base_url, params=params)
+            receipt = response.json()
+
+            result = receipt.get('result', None)
+
+            if result and result.get('status', 0) == '1':
+                params['module'] = 'proxy'
+                params['action'] = 'eth_getTransactionByHash'
+
+                response = requests.get(self.etherscan_base_url, params=params)
+                response = response.json()
+
+                if response.get('result', None) or response.get('error', True):
+                    transaction = response['result']
+
+                    sender_address = transaction['from']
+                    recipient_address = transaction['to']
+                    eth_amount_wei = int(transaction['value'], 16)  # Amount in wei
+                    eth_amount = Web3.from_wei(eth_amount_wei, 'ether')  # Convert wei to ETH
+                    
+                    logger.info(f'Transaction of {eth_amount} from {sender_address} to {recipient_address} was successfully validated.')
+                    
+                    # Check that the recipient address is the same as the supplied address
+                    if Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS):
+                        # User is allowed to transfer more, or less. The algorithm judges the number of times it is shown daily automatically
+
+                        # if eth_amount >= self.ad_prices[str(self.ad_info[chat_id]['number_of_days'])]:
+                        #     ...
+                            
+                        # Check if the hash has been used for an ad or a swap
+                        swap_check = await Swap.objects.filter(origin_hash=tx_hash).aexists()
+
+                        if swap_check:
+                            self.send_message(chat_id, 'It seems this hash has been used to process a swap before. Please make a new transaction and enter hash to proceed with the ad')
+
+                        else:
+                            ad_info = self.ad_info[chat_id]
+
+                            ad = await Ad.objects.acreate(telegram_username=ad_info['username'],
+                                                    ad_text=ad_info['ad_text'],
+                                                    external_link=ad_info['link'],
+                                                    amount_paid=eth_amount,
+                                                    showtime_duration=ad_info['number_of_days'],
+                                                    date_ending=datetime.now() + timedelta(days=ad_info['number_of_days']),
+                                                    is_paid=True,
+                                                    is_running=True,
+                                                    transaction_hash=tx_hash)
+                                                        
+                            logger.info(f'New ad {ad.id} created successfully')
+                            
+                            self.send_message(chat_id, f'Your ad has been created and will start running shortly. Your ad\'s ID is {ad.id}. Tap /monitor to monitor ad.')
+
+                            ad_info.clear()
+
+                            self.ongoing = ''
+
+                    else:
+                        logger.error(f'Recipient address mismatch with transaction {tx_hash}')
+                        self.send_message(chat_id, 'It seems you might have made this transaction to the wrong address. Please check the address and make the transaction again. You can tap /cancel to cancel the ad.')
+
+                else:
+                    logger.error(f'Error while retrieving transaction with hash {tx_hash}')
+
+                    self.send_message(chat_id, 'An error occurred while retrieving the transaction details. Please try again.') 
+
+            else:
+                logger.error(f'Error while retrieving receipt of hash {tx_hash}')
+
+                self.send_message(chat_id, 'An error occurred while retrieving the transaction details. Please try again.')
+
+        except IntegrityError as e:
+            logger.error(f'Error creating ad: {e}')
+
+            self.send_message(chat_id, 'It seems this hash has been used to process an ad before. Please make a new transaction and enter hash to proceed with the ad')
+
 
 if __name__ == '__main__':
     bot = DemoTeleBot(config('TELEGRAM_BOT_TOKEN'))
 
-    bot.polling(none_stop=True, interval=0, allowed_updates=['message'])
+    bot.polling(non_stop=True, interval=0, allowed_updates=['message', 'callback_query'])
+
+
+
+# from itertools import islice, cycle
+
+# import numpy as np
+
+# batch_size = 100
+# i_range = range(100)
+# n_range = np.arange(0.1000, 1.000, 0.009)  # Example range for 'n'
+# z_range = [1, 2, 3, 4, 5]  # Example values for 'z'
+
+# objs = (Ad(ad_text="Test %s" % i, amount_paid=n, showtime_duration=z, is_running=True, external_link='https://samplle.com', telegram_username='testuser') for i, n, z in zip(i_range, n_range, cycle(z_range)))
+
+# while True:
+#     batch = list(islice(objs, batch_size))
+#     if not batch:
+#         break
+#     Ad.objects.bulk_create(batch, batch_size)

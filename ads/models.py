@@ -17,7 +17,7 @@ class Ad(models.Model):
     is_running = models.BooleanField(default=False)
 
     date_created = models.DateTimeField(auto_now_add=True)
-    date_ending = models.DateTimeField(blank=True, help_text='Date ad is due to stop running')
+    date_ending = models.DateTimeField(blank=True, null=True, help_text='Date ad is due to stop running')
 
     total_times_shown = models.IntegerField(default=0)
     daily_showtime_counter = models.IntegerField(default=0) # TODO: Create management command to reset showtime_counter daily

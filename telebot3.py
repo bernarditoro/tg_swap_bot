@@ -1,5 +1,5 @@
 from telebot import TeleBot
-from telebot.types import ChatPermissions
+from telebot.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 
 import tweepy
 
@@ -135,9 +135,36 @@ def unlock_group_command(message):
     bot.send_message(message.chat.id, 'Group has been unlocked!')
 
 
+@bot.message_handler(commands=['try_callback'])
+def send_inline_keyboard(message):
+    # Create inline keyboard
+    inline_keyboard = InlineKeyboardMarkup()
+    button = InlineKeyboardButton("Try Callback", callback_data="try_callback")
+    inline_keyboard.add(button)
+
+    # Send message with inline keyboard
+    message = bot.send_message(message.chat.id, "Press the button below to try callback:", reply_markup=inline_keyboard)
+
+
+@bot.callback_query_handler(lambda call: call.data == 'try_callback')
+def handle_callback_query(call):
+    print ('Tries')
+
+    if call.data == "try_callback":
+        # Edit the previous message's inline keyboard
+        updated_inline_keyboard = InlineKeyboardMarkup()
+        button = InlineKeyboardButton("Try Callback Again", callback_data="try_callback_again")
+        updated_inline_keyboard.add(button)
+
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=updated_inline_keyboard)
+    elif call.data == "try_callback_again":
+        bot.answer_callback_query(call.id, "You pressed Try Callback Again")
+
+
 # Handling incoming text messages
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_message(message):
+    print ('Tries2')
     chat_type = message.chat.type
     
     text = message.text
@@ -234,6 +261,7 @@ def handle_message(message):
         return
 
 
+
 # Perform Twitter Tasks
 async def perform_twitter_tasks(group_id):
     while True:
@@ -280,4 +308,4 @@ async def perform_twitter_tasks(group_id):
             break
 
 if __name__ == '__main__':
-    bot.polling(none_stop=True, interval=0, timeout=20, allowed_updates=['message'])
+    bot.infinity_polling(restart_on_change=True, allowed_updates=['message', 'callback_query'])

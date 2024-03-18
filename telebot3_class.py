@@ -8,8 +8,6 @@ import asyncio
 
 from asgiref.sync import sync_to_async
 
-# from typing import Final
-
 import logging
 
 from decouple import config
@@ -25,6 +23,7 @@ from django.db import IntegrityError
 
 from datetime import datetime, timedelta
 
+import validators
 
 # Set the DJANGO_SETTINGS_MODULE environment variable
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'jpegdude.settings')
@@ -76,6 +75,7 @@ class DemoTeleBot(TB):
     ad_info = {}
 
     ad_prices = {
+        # 'number_of_days': 'price'
         '2': 0.3,
         '3': 0.5,
         '4': 0.65
@@ -269,7 +269,7 @@ Your project will be displayed in the trending group for the selected duration:"
 
                 self.is_registering_ad = True
 
-                #TODO: Answer the query
+                return
 
                 # updated_inline_keyboard = InlineKeyboardMarkup()
                 # button = InlineKeyboardButton("Try Callback Again", callback_data="try_callback_again")
@@ -373,7 +373,7 @@ Your project will be displayed in the trending group for the selected duration:"
 
                                 reply = f"""Do you want to swap ETH from *{self.raid_info[chat_id]['dev_wallet_address']}* to token with token address: *{text}*?
                             
-Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap."""
+Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to end the swap."""
 
                                 self.send_message(chat_id, reply, parse_mode='Markdown')
 
@@ -393,7 +393,7 @@ Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel
 Please ensure that you send the amount from the wallet address you entered earlier. After sending, reply \
 with the transaction hash to confirm the transfer and proceed with the raid."""
 
-                                self.send_message(chat_id, reply, parse_mode='Markdown', reply_markup=markup)
+                                self.send_message(chat_id, reply, parse_mode='Markdown')
                                 
                                 self.ongoing = 'tx_validation'
 
@@ -403,7 +403,7 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                                 self.ongoing = 'wallet_address'
 
                             else:
-                                self.send_message(chat_id, 'Please reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to cancel the swap.')
+                                self.send_message(chat_id, 'Please reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to end the swap.')
 
                         elif self.ongoing == 'tx_validation':
                             self.send_message(chat_id, 'Please hold on while your transaction is confirmed.')
@@ -445,27 +445,31 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                         self.ongoing = 'ad_link'
 
                     elif self.ongoing == 'ad_link':
-                        self.ad_info[chat_id]['link'] = text
+                        if validators.url(text):
+                            self.ad_info[chat_id]['link'] = text
 
-                        delete_messages(message)
+                            delete_messages(message)
 
-                        reply = f"""Okay. So if I'm getting this all right, these are your ad details:
+                            reply = f"""Okay. So if I'm getting this all right, these are your ad details:
 
-    Telegram username: _{self.ad_info[chat_id]['username']}_
-    Ad Text: _{self.ad_info[chat_id]['ad_text']}_
-    Ad Link: _{self.ad_info[chat_id]['link']}_
+        Telegram username: _{self.ad_info[chat_id]['username']}_
+        Ad Text: _{self.ad_info[chat_id]['ad_text']}_
+        Ad Link: _{self.ad_info[chat_id]['link']}_
 
-    Attached below is how your ad should appear when it is running.
+        Attached below is how your ad should appear when it is running.
 
-    Reply with _Proceed_ to proceed, or _Edit_ to edit your ad details. Tap /cancel to cancel ad."""
-                        
-                        markup = quick_markup({
-                            f"{self.ad_info[chat_id]['ad_text']}": {'url': self.ad_info[chat_id]['link']}
-                        })
+        Reply with _Proceed_ to proceed, or _Edit_ to edit your ad details. Tap /cancel to cancel ad."""
+                            
+                            markup = quick_markup({
+                                f"{self.ad_info[chat_id]['ad_text']}": {'url': self.ad_info[chat_id]['link']}
+                            })
 
-                        self.send_message(chat_id, reply, reply_markup=markup, parse_mode='Markdown')
+                            self.send_message(chat_id, reply, reply_markup=markup, parse_mode='Markdown')
 
-                        self.ongoing = 'ad_confirm'
+                            self.ongoing = 'ad_confirm'
+
+                        else:
+                            self.send_message(chat_id, 'It seems you have entered a wrong link. Note that links should look something like *https://your_url.com*', parse_mode='Markdown')
 
                     elif self.ongoing == 'ad_confirm':
                         if text.lower() == 'proceed':
@@ -555,8 +559,10 @@ achieve their goal here:
 
 [Jpegdude Trending]({self.get_chat(config('TRENDS_GROUP_ID').invite_link)})"""
                     
+                    ad = choose_ad()
+                    
                     advertisement_markup = quick_markup({
-                        'Sample Advertisement': {'url': '#'}
+                        ad.ad_text: {'url': ad.external_link}
                     })
 
                     # Reply with processing status
@@ -588,7 +594,7 @@ achieve their goal here:
             response = requests.get(self.etherscan_base_url, params=params)
             result = response.json()
 
-            if result.get('result', 'None') or result.get('error', True):
+            if result.get('result', 'None') and result.get('error', True):
                 transaction = result['result']
 
                 sender_address = transaction['from']
@@ -688,7 +694,7 @@ achieve their goal here:
 
             result = receipt.get('result', None)
 
-            if result and result.get('status', 0) == '1':
+            if result and int(result.get('status', 0)) == 1:
                 params['module'] = 'proxy'
                 params['action'] = 'eth_getTransactionByHash'
 
@@ -718,18 +724,20 @@ achieve their goal here:
                         if swap_check:
                             self.send_message(chat_id, 'It seems this hash has been used to process a swap before. Please make a new transaction and enter hash to proceed with the ad')
 
+                            return 
+                        
                         else:
                             ad_info = self.ad_info[chat_id]
 
                             ad = await Ad.objects.acreate(telegram_username=ad_info['username'],
-                                                    ad_text=ad_info['ad_text'],
-                                                    external_link=ad_info['link'],
-                                                    amount_paid=eth_amount,
-                                                    showtime_duration=ad_info['number_of_days'],
-                                                    date_ending=datetime.now() + timedelta(days=ad_info['number_of_days']),
-                                                    is_paid=True,
-                                                    is_running=True,
-                                                    transaction_hash=tx_hash)
+                                                          ad_text=ad_info['ad_text'],
+                                                          external_link=ad_info['link'],
+                                                          amount_paid=eth_amount,
+                                                          showtime_duration=ad_info['number_of_days'],
+                                                          date_ending=datetime.now() + timedelta(days=ad_info['number_of_days']),
+                                                          is_paid=True,
+                                                          is_running=True,
+                                                          transaction_hash=tx_hash)
                                                         
                             logger.info(f'New ad {ad.id} created successfully')
                             
@@ -741,7 +749,8 @@ achieve their goal here:
 
                     else:
                         logger.error(f'Recipient address mismatch with transaction {tx_hash}')
-                        self.send_message(chat_id, 'It seems you might have made this transaction to the wrong address. Please check the address and make the transaction again. You can tap /cancel to cancel the ad.')
+
+                        self.send_message(chat_id, 'It seems you might have made this transaction to the wrong address. Please check the destination address and make the transaction again. You can tap /cancel to cancel the ad.')
 
                 else:
                     logger.error(f'Error while retrieving transaction with hash {tx_hash}')
@@ -763,22 +772,3 @@ if __name__ == '__main__':
     bot = DemoTeleBot(config('TELEGRAM_BOT_TOKEN'))
 
     bot.polling(non_stop=True, interval=0, allowed_updates=['message', 'callback_query'])
-
-
-
-# from itertools import islice, cycle
-
-# import numpy as np
-
-# batch_size = 100
-# i_range = range(100)
-# n_range = np.arange(0.1000, 1.000, 0.009)  # Example range for 'n'
-# z_range = [1, 2, 3, 4, 5]  # Example values for 'z'
-
-# objs = (Ad(ad_text="Test %s" % i, amount_paid=n, showtime_duration=z, is_running=True, external_link='https://samplle.com', telegram_username='testuser') for i, n, z in zip(i_range, n_range, cycle(z_range)))
-
-# while True:
-#     batch = list(islice(objs, batch_size))
-#     if not batch:
-#         break
-#     Ad.objects.bulk_create(batch, batch_size)

@@ -6,8 +6,6 @@ import tweepy
 
 import asyncio
 
-from asgiref.sync import sync_to_async
-
 import logging
 
 from decouple import config
@@ -16,32 +14,15 @@ import requests
 
 from web3 import Web3
 
-import os
-
-import django
-from django.db import IntegrityError
-
 from datetime import datetime, timedelta
 
 import validators
-
-# Set the DJANGO_SETTINGS_MODULE environment variable
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'jpegdude.settings')
-
-# Configure Django
-django.setup()
-
-from swaps.swap import swap_eth_for_tokens
-from swaps.models import Swap
-
-from ads.ads import choose_ad
-from ads.models import Ad
 
 
 # Configuration for the root logger with a file handler
 logging.basicConfig(
     level=logging.INFO,
-    filename='logs.log',
+    filename='logs/logs.log',
     filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
@@ -67,7 +48,7 @@ class DemoTeleBot(TB):
     # Initialize Tweepy
     client = tweepy.Client(TWITTER_BEARER_TOKEN)
 
-    etherscan_base_url = 'https://api-goerli.etherscan.io/api' #TODO: Remove the -goerli before prod
+    etherscan_base_url = 'https://api-sepolia.etherscan.io/api' #TODO: Remove the -goerli before prod
 
     # Raid Information Dictionary
     raid_info = {}
@@ -92,14 +73,16 @@ class DemoTeleBot(TB):
 
     is_registering_ad = False
 
+    backend_url = config('BACKEND_APP_URL', cast=str)
+
     def register_message_handlers(self):
         # Start command
         @self.message_handler(commands=['start'])
         def start_command(message):
-            ad = choose_ad()
+            ad = requests.get(f'{self.backend_url}/ads/get-random/').json()
             
             markup = quick_markup({
-                ad.ad_text: {'url': ad.external_link}
+                ad['ad_text']: {'url': ad['external_link']}
             }, row_width=1)
 
             text = """Hi there! I am jpegdude! Here is how you can utilise my functions:\n
@@ -510,8 +493,8 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
         tweet_link = raid_group['tweet_link']
 
         # Send message to trends group
-        message = f"""*The jpegdude bot has been activated by --.* The target is {likes_required} likes,
-{replies_required} replies, {retweets_required} retweets, {bookmarks_required} bookmarks. Help them
+        message = f"""*The jpegdude bot has been activated by --.* The target is {likes_required} likes, \
+{replies_required} replies, {retweets_required} retweets, {bookmarks_required} bookmarks. Help them \
 achieve their goal here:
 
 {tweet_link}"""
@@ -559,10 +542,10 @@ achieve their goal here:
 
 [Jpegdude Trending]({self.get_chat(config('TRENDS_GROUP_ID').invite_link)})"""
                     
-                    ad = choose_ad()
-                    
+                    ad = requests.get(f'{self.backend_url}/ads/get-random/').json()
+
                     advertisement_markup = quick_markup({
-                        ad.ad_text: {'url': ad.external_link}
+                        ad['ad_text']: {'url': ad['external_link']}
                     })
 
                     # Reply with processing status
@@ -606,26 +589,38 @@ achieve their goal here:
 
                 if (Web3.to_checksum_address(sender_address) == Web3.to_checksum_address(self.raid_info[group_id]['dev_wallet_address']) and
                     Web3.to_checksum_address(recipient_address) == Web3.to_checksum_address(self.WALLET_ADDRESS)):
-                    # Create swap record 
-                    self.swap = await Swap.objects.aget_or_create(destination_address=sender_address,
-                                                                  token_address=self.raid_info[group_id]['token_address'],
-                                                                  origin_hash=tx_hash,
-                                                                  is_successful=False)
-                    
-                    self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                    hash, receipt_status = await self.perform_swap(tx_hash, group_id, eth_amount)
+                    # Create swap record
+                    data = {
+                        'destination_address': sender_address,
+                        'token_address': self.raid_info[group_id]['token_address'],
+                        'origin_hash': tx_hash,
+                    }
 
-                    if receipt_status == 1:
-                        # If transaction was successful
-                        self.send_message(group_id, f'Swap with transaction hash *{hash}* was successful!\n\nTwitter raid will now be performed.', parse_mode='Markdown')
+                    response = requests.post(f'{self.backend_url}/swaps/create/', data=data)
 
-                        self.ongoing = 'task'
+                    if response.status_code == 201:
+                        self.swap = response.json()
+                        
+                        self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                        await self.perform_twitter_tasks(group_id)
+                        hash, receipt_status = await self.perform_swap(tx_hash, group_id, eth_amount)
+
+                        if receipt_status == 1:
+                            # If transaction was successful
+                            self.send_message(group_id, f'Swap with transaction hash *{hash}* was successful!\n\nTwitter raid will now be performed.', parse_mode='Markdown')
+
+                            self.ongoing = 'task'
+
+                            await self.perform_twitter_tasks(group_id)
+
+                        else:
+                            self.send_message(group_id, f'Swap with transaction hash *{hash}* could not be completed because an error occurred during the swap.', parse_mode='Markdown')
 
                     else:
-                        self.send_message(group_id, f'Swap with transaction hash *{hash}* could not be completed!', parse_mode='Markdown')
+                        logger.info(f'Request to swap create api with origin hash {tx_hash} returned response with status {response.status_code}')
+
+                        self.send_message(group_id, 'Swap could not completed because an error occurred while creating the swap')
 
                 else:
                     logger.info(f'Transaction with hash {tx_hash} could not be validated due to unmatching variables.')
@@ -635,17 +630,15 @@ achieve their goal here:
             else:
                 logger.error(f'Error retrieving transaction details with hash {tx_hash}')
 
-                self.send_message(group_id, 'It seems the transaction hash is incorrect. Could you try again with a correct transaction hash?')
+                self.send_message(group_id, 'It seems the transaction hash is incorrect. Please try again with a correct transaction hash?')
 
-        except IntegrityError as e:
-            logger.error(f'Error creating a swap record: {e}')
+        # except IntegrityError as e:
+        #     logger.error(f'Error creating a swap record: {e}')
 
-            self.send_message(group_id, 'It seems this transaction hash has been used to process a swap before. Please reach out to an admin for further assistance.')
+        #     self.send_message(group_id, 'It seems this transaction hash has been used to process a swap before. Please reach out to an admin for further assistance.')
 
         except Exception as e:
             logger.error(f'Error retrieving transaction details of hash {tx_hash}: ({type(e)}, {e}')
-
-            print(e)
 
             self.send_message(group_id, 'Transaction could not be verified! Please check your transaction hash and try again.')
 
@@ -653,9 +646,21 @@ achieve their goal here:
         recipient_address = self.raid_info[group_id]['dev_wallet_address']
         token_address = self.raid_info[group_id]['token_address']
 
-        hash, receipt_status = await sync_to_async(swap_eth_for_tokens)(origin_hash, recipient_address, token_address, eth_amount)
+        params = {
+            'origin_hash': origin_hash,
+            'recipient_address': recipient_address,
+            'token_address': token_address,
+            'amount_to_swap': eth_amount
+        }
 
-        return hash, receipt_status
+        response = requests.get(f'{self.backend_url}/swaps/swap/', params=params)
+
+        if response.status_code == 200:
+            response = response.json()
+
+            return response['tx_hash'], response['receipt']
+        
+        return
 
     def unlock_group_command(self, group_id):
         if self.is_raiding:
@@ -719,9 +724,9 @@ achieve their goal here:
                         #     ...
                             
                         # Check if the hash has been used for an ad or a swap
-                        swap_check = await Swap.objects.filter(origin_hash=tx_hash).aexists()
+                        response = requests.get(f'{self.backend_url}/swaps/', params={'origin_hash': tx_hash})
 
-                        if swap_check:
+                        if len(response.json()) >= 1:
                             self.send_message(chat_id, 'It seems this hash has been used to process a swap before. Please make a new transaction and enter hash to proceed with the ad')
 
                             return 
@@ -729,19 +734,26 @@ achieve their goal here:
                         else:
                             ad_info = self.ad_info[chat_id]
 
-                            ad = await Ad.objects.acreate(telegram_username=ad_info['username'],
-                                                          ad_text=ad_info['ad_text'],
-                                                          external_link=ad_info['link'],
-                                                          amount_paid=eth_amount,
-                                                          showtime_duration=ad_info['number_of_days'],
-                                                          date_ending=datetime.now() + timedelta(days=ad_info['number_of_days']),
-                                                          is_paid=True,
-                                                          is_running=True,
-                                                          transaction_hash=tx_hash)
-                                                        
-                            logger.info(f'New ad {ad.id} created successfully')
+                            # Create ad
+                            data = {
+                                'telegram_username': ad_info['username'],
+                                'ad_text': ad_info['ad_text'],
+                                'external_link': ad_info['link'],
+                                'amount_paid': eth_amount,
+                                'showtime_duration': ad_info['number_of_days'],
+                                'date_ending': datetime.now() + timedelta(days=ad_info['number_of_days']),
+                                'is_paid': True,
+                                'is_running': True,
+                                'transaction_hash': tx_hash
+                            }
+
+                            response = requests.post(f'{self.backend_url}/ads/create/', data=data)
                             
-                            self.send_message(chat_id, f'Your ad has been created and will start running shortly. Your ad\'s ID is {ad.id}. Tap /monitor to monitor ad.')
+                            ad = response.json()
+                                                        
+                            logger.info(f'New ad {ad["id"]} created successfully')
+                            
+                            self.send_message(chat_id, f'Your ad has been created and will start running shortly. Your ad\'s ID is {ad["id"]}. Tap /monitor to monitor ad.')
 
                             ad_info.clear()
 
@@ -762,7 +774,7 @@ achieve their goal here:
 
                 self.send_message(chat_id, 'An error occurred while retrieving the transaction details. Please try again.')
 
-        except IntegrityError as e:
+        except Exception as e:
             logger.error(f'Error creating ad: {e}')
 
             self.send_message(chat_id, 'It seems this hash has been used to process an ad before. Please make a new transaction and enter hash to proceed with the ad')

@@ -15,7 +15,7 @@ from decouple import config
 # Configuration for the root logger with a file handler
 logging.basicConfig(
     level=logging.INFO,
-    filename='logs.log',
+    filename='logs/logs.log',
     filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'

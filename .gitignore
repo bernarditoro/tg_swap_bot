@@ -9,6 +9,7 @@ venv.bak/
 
 # Log files
 *.log
+/logs
 
 *keys.txt
 

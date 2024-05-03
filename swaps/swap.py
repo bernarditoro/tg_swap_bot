@@ -10,13 +10,11 @@ import time
 
 from swaps.models import Swap
 
-from asgiref.sync import sync_to_async
-
 
 # Configuration for the root logger with a file handler
 logging.basicConfig(
     level=logging.INFO,
-    filename='logs.log',
+    filename='logs/logs.log',
     filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
@@ -47,7 +45,7 @@ def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, 
     gas_price = web3.eth.gas_price
     gas_limit = 200000
 
-    etherscan_base_url = 'https://api.etherscan.io/api'
+    etherscan_base_url = config('ETHERSCAN_BASE_URL')
     abi_params = {
         'module': 'contract',
         'action': 'getabi',
@@ -63,12 +61,12 @@ def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, 
     # Convert amount to Wei
     amount_in_wei = web3.to_wei(amount_to_swap, 'ether') 
 
-    # weth_address = uniswap_contract.functions.WETH().call()
+    weth_address = uniswap_contract.functions.WETH().call()
     # print(weth_address)
 
     swap_transaction = uniswap_contract.functions.swapExactETHForTokens(
         0,
-        [web3.to_checksum_address('0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6'), web3.to_checksum_address(token_contract_address)],
+        [web3.to_checksum_address(weth_address), web3.to_checksum_address(token_contract_address)],
         recipient_address,
         web3.eth.get_block('latest')['timestamp'] + 600, # Deadline for the transaction
     ).build_transaction({
@@ -105,6 +103,6 @@ if __name__ == '__main__':
     token_contract_address = config('TOKEN_CONTRACT_ADDRESS')
     amount_to_swap = 0.000393479271386462 # In ether
 
-    hash = swap_eth_for_tokens(recipient_address, token_contract_address, amount_to_swap)
+    hash, _ = swap_eth_for_tokens('', recipient_address, token_contract_address, amount_to_swap)
 
     print (hash)

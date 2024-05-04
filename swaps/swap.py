@@ -23,15 +23,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
     
-def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, amount_to_swap):
+def swap_eth_for_tokens(network, origin_hash, recipient_address, token_contract_address, amount_to_swap):
     swap = Swap.objects.get(origin_hash=origin_hash)
 
     private_key = config('WALLET_PRIVATE_KEY') # private key of wallet (for authorisation)
     wallet_address = config('WALLET_ADDRESS') # Where eth to be swapped is taken from
-    infura_url = config('INFURA_URL')
-    uniswap_router_address = config('UNISWAP_ROUTER_ADDRESS')
 
-    web3 = Web3(Web3.HTTPProvider(infura_url)) # Connect to a remote Ethereum node
+    router_address = config('UNISWAP_ROUTER_ADDRESS_ETH') if network == 'eth' else config('UNISWAP_ROUTER_ADDRESS_BASE')
+
+    web3 = Web3(Web3.HTTPProvider(config('INFURA_URL'))) if network == 'eth' else Web3(Web3.HTTPProvider(config('ALCHEMY_URL'))) # Connect to a remote Ethereum node
 
     wallet_balance_wei = web3.eth.get_balance(wallet_address)
     wallet_balance_eth = web3.from_wei(wallet_balance_wei, 'ether')
@@ -45,18 +45,18 @@ def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, 
     gas_price = web3.eth.gas_price
     gas_limit = 200000
 
-    etherscan_base_url = config('ETHERSCAN_BASE_URL')
+    scan_base_url = config('ETHERSCAN_BASE_URL') if network == 'eth' else config('BASESCAN_BASE_URL')
     abi_params = {
         'module': 'contract',
         'action': 'getabi',
-        'address': uniswap_router_address,
-        'apikey': config('ETHERSCAN_KEY_TOKEN')
+        'address': router_address,
+        'apikey': config('ETHERSCAN_KEY_TOKEN') if network == 'eth' else config('BASESCAN_KEY_TOKEN')
     }
-    uniswap_abi_response = requests.get(etherscan_base_url, params=abi_params)
+    uniswap_abi_response = requests.get(scan_base_url, params=abi_params)
 
     uniswap_abi = uniswap_abi_response.json()['result']
 
-    uniswap_contract = web3.eth.contract(address=web3.to_checksum_address(uniswap_router_address), abi=uniswap_abi)
+    uniswap_contract = web3.eth.contract(address=web3.to_checksum_address(router_address), abi=uniswap_abi)
 
     # Convert amount to Wei
     amount_in_wei = web3.to_wei(amount_to_swap, 'ether') 
@@ -80,8 +80,8 @@ def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, 
     signed_transaction = web3.eth.account.sign_transaction(swap_transaction, private_key)
 
     transaction_hash = web3.eth.send_raw_transaction(signed_transaction.rawTransaction) # Buy the token
-
-    time.sleep(40) # Wait for 40 seconds 
+    
+    time.sleep(50) # Wait for 50 seconds
 
     receipt = web3.eth.get_transaction_receipt(web3.to_hex(transaction_hash))
 
@@ -93,7 +93,7 @@ def swap_eth_for_tokens(origin_hash, recipient_address, token_contract_address, 
     swap.is_successful = receipt.get('status', 0)
     swap.save()
 
-    logger.info(f'Swapped {amount_to_swap}ETH to tokens with contract_address {token_contract_address} with transaction hash {web3.to_hex(transaction_hash)} and receipt status {receipt.get("status", 0)}')
+    logger.info(f'Swapped {amount_to_swap}ETH on {"Ethereum" if network == "eth" else "Base"} network to tokens with contract_address {token_contract_address} with transaction hash {web3.to_hex(transaction_hash)} and receipt status {receipt.get("status", 0)}')
 
     return web3.to_hex(transaction_hash), receipt.get('status', 0)
 

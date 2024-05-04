@@ -43,12 +43,14 @@ class DemoTeleBot(TB):
 
     ETHERSCAN_KEY_TOKEN = config('ETHERSCAN_KEY_TOKEN')
 
+    BASESCAN_KEY_TOKEN = config('BASESCAN_KEY_TOKEN')
+
     WALLET_ADDRESS = config('WALLET_ADDRESS')
 
     # Initialize Tweepy
     client = tweepy.Client(TWITTER_BEARER_TOKEN)
 
-    etherscan_base_url = 'https://api-sepolia.etherscan.io/api' #TODO: Remove the -goerli before prod
+    etherscan_base_url = 'https://api-sepolia.etherscan.io/api' #TODO: Remove the -sepolia before prod
 
     # Raid Information Dictionary
     raid_info = {}
@@ -98,9 +100,8 @@ class DemoTeleBot(TB):
 
             self.send_message(message.chat.id, text, reply_markup=markup)
 
-        # Raid command
         @self.message_handler(commands=['raid'])
-        def raid_command(message):
+        def ask_raid_network(message):
             chat_type = message.chat.type
             user_id = message.from_user.id
 
@@ -109,55 +110,71 @@ class DemoTeleBot(TB):
                 chat_member = self.get_chat_member(message.chat.id, user_id)
 
                 if chat_member.status in ('administrator', 'creator'):
-                    if not self.is_raiding:
-                        self.is_raiding = True
+                    markup = quick_markup({
+                        'Ethereum': {'callback_data': 'eth'},
+                        'Base': {'callback_data': 'base'},
+                    }, row_width=1)
 
-                        group_id = message.chat.id
+                    reply = """Choose the network to perform raid:"""
 
-                        self.raid_info[group_id] = {
-                            'status': 'in_progress',
-                            'tweet_link': None,
-                            'likes_threshold': 0,
-                            'replies_threshold': 0,
-                            'retweets_threshold': 0,
-                            'bookmarks_threshold': 0,
+                    message = self.send_message(message.chat.id, reply, reply_markup=markup)
 
-                            'dev_wallet_address': '',
-                            'token_address': '',
-                        }
-
-                        # Restrict members from sending messages
-                        chat_permissions = ChatPermissions(can_send_messages=False)
-
-                        self.set_chat_permissions(message.chat.id, chat_permissions)
-
-                        logger.info(f'User {message.from_user.username} with {chat_member.status} status executed /raid command')
-
-                        logger.info(f'Group {message.chat.title} is now set locked for /raid command')
-
-                        tweet_message = self.send_message(message.chat.id, 'Group locked. Please provide the tweet link.')
+                    logger.info(f'User {message.from_user.username} with {chat_member.status} status executed /raid command')
                     
-                        # Set ongoing as 'tweet link'
-                        self.ongoing = 'tweet_link'
-
-                        # Add id of tweet message to list so it can be deleted later after user has provided tweet link
-                        self.messages_list.append(tweet_message.id)
-                    
-                    else:
-                        self.send_message(message.chat.id, 'Raid currently ongoing. Please /end raid to start another raid.')
-                    
+                    # self.register_next_step_handler(message, raid_command)
+                
                 else:
                     logger.info(f'User {message.from_user.username} with {chat_member.status} status tried to execute /raid command')
 
-                    self.reply_to(message, 'You do not have permission to use this command.')
-
-                    return
+                    self.send_message(message.chat.id, 'You do not have permission to use this command!')
 
             else:
                 logger.info(f'User {message.from_user.username} tried to execute /raid command in {chat_type}')
 
-                self.reply_to(message, 'This command can only be used in a group.')
+                self.send_message(message.chat.id, 'This command can only be used in a group chat')
 
+        # Ethereum Raid command
+        def raid_command(call):
+            message = call.message
+            group_id = message.chat.id
+
+            if not self.is_raiding:
+                self.is_raiding = True
+
+                self.raid_info[group_id] = {
+                    'network': call.data,
+
+                    'status': 'in_progress',
+                    'tweet_link': None,
+                    'likes_threshold': 0,
+                    'replies_threshold': 0,
+                    'retweets_threshold': 0,
+                    'bookmarks_threshold': 0,
+
+                    'dev_wallet_address': '',
+                    'token_address': '',
+                }
+
+                # Restrict members from sending messages
+                chat_permissions = ChatPermissions(can_send_messages=False)
+
+                self.set_chat_permissions(group_id, chat_permissions)
+
+                logger.info(f'Group {message.chat.title} is now set locked for /raid command')
+
+                self.delete_message(group_id, message.id) # Delete the network choice message
+
+                tweet_message = self.send_message(group_id, 'Group locked. Please provide the tweet link.')
+            
+                # Set ongoing as 'tweet link'
+                self.ongoing = 'tweet_link'
+
+                # Add id of tweet message to list so it can be deleted later after user has provided tweet link
+                self.messages_list.append(tweet_message.id)
+            
+            else:
+                self.send_message(group_id, 'Raid currently ongoing. Please /end raid to start another raid.')
+            
         # Count members command
         @self.message_handler(commands=['count_members'])
         def count_members_command(message):
@@ -233,7 +250,10 @@ Your project will be displayed in the trending group for the selected duration:"
 
             text = call.data
 
-            if 'days_ad' in text:
+            if text in ('eth', 'base'):
+                return raid_command(call)
+
+            elif 'days_ad' in text:
                 self.ad_info[chat_id] = {
                     'number_of_days': None,
                     'username': None,
@@ -354,7 +374,8 @@ Your project will be displayed in the trending group for the selected duration:"
                             if text.startswith('0x'):
                                 self.raid_info[chat_id]['token_address'] = text
 
-                                reply = f"""Do you want to swap ETH from *{self.raid_info[chat_id]['dev_wallet_address']}* to token with token address: *{text}*?
+                                reply = f"""Do you want to swap ETH from *{self.raid_info[chat_id]['dev_wallet_address']}* \
+to token with token address: *{text}* on the *{'Ethereum' if self.raid_info[chat_id]['network'] == 'eth' else 'Base'}* Network?
                             
 Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to end the swap."""
 
@@ -373,8 +394,10 @@ Reply with _Yes_ to proceed, _Edit_ to edit your swap details, or /end to end th
 
 *{self.WALLET_ADDRESS}*
 
-Please ensure that you send the amount from the wallet address you entered earlier. After sending, reply \
-with the transaction hash to confirm the transfer and proceed with the raid."""
+Please ensure that you send the amount from the wallet address you entered earlier. Also, remember to make the transaction \
+on the *{'Ethereum' if self.raid_info[chat_id]['network'] == 'eth' else 'Base'}* network.
+
+After sending, reply with the transaction hash to confirm the transfer and proceed with the raid."""
 
                                 self.send_message(chat_id, reply, parse_mode='Markdown')
                                 
@@ -392,16 +415,13 @@ with the transaction hash to confirm the transfer and proceed with the raid."""
                             self.send_message(chat_id, 'Please hold on while your transaction is confirmed.')
 
                             asyncio.run(self.validate_swap_transaction_task(chat_id, text))
-
+                            
                         else:
                             return 
                     
                     except ValueError:
                         self.reply_to(message, 'It seems like you have entered an incorrect value. Please type the correct value to proceed.')
 
-                    # finally:
-                        # unlock_group_command(message)
-                        
                 else:
                     return
                 
@@ -565,19 +585,23 @@ achieve their goal here:
 
     # Validate eth tnx
     async def validate_swap_transaction_task(self, group_id, tx_hash):
-        # Connect to etherscan api and get transaction details
+        network = self.raid_info[group_id]['network']
+
+        # Connect to scan api and get transaction details
         params = {
             'module': 'proxy',
             'action': 'eth_getTransactionByHash',
             'txhash': tx_hash,
-            'apikey': self.ETHERSCAN_KEY_TOKEN
+            'apikey': self.ETHERSCAN_KEY_TOKEN if network == 'eth' else self.BASESCAN_KEY_TOKEN
         }
 
         try:
-            response = requests.get(self.etherscan_base_url, params=params)
+            request_url = self.etherscan_base_url if network == 'eth' else self.basecan_base_url
+
+            response = requests.get(request_url, params=params)
             result = response.json()
 
-            if result.get('result', 'None') and result.get('error', True):
+            if result.get('result', None) and not result.get('error', False):
                 transaction = result['result']
 
                 sender_address = transaction['from']
@@ -595,6 +619,7 @@ achieve their goal here:
                         'destination_address': sender_address,
                         'token_address': self.raid_info[group_id]['token_address'],
                         'origin_hash': tx_hash,
+                        'blockchain_network': 'Ethereum' if network == 'eth' else 'Base'
                     }
 
                     response = requests.post(f'{self.backend_url}/swaps/create/', data=data)
@@ -604,7 +629,7 @@ achieve their goal here:
                         
                         self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                        hash, receipt_status = await self.perform_swap(tx_hash, group_id, eth_amount)
+                        hash, receipt_status = await self.perform_swap(group_id, tx_hash, eth_amount)
 
                         if receipt_status == 1:
                             # If transaction was successful
@@ -632,21 +657,18 @@ achieve their goal here:
 
                 self.send_message(group_id, 'It seems the transaction hash is incorrect. Please try again with a correct transaction hash?')
 
-        # except IntegrityError as e:
-        #     logger.error(f'Error creating a swap record: {e}')
-
-        #     self.send_message(group_id, 'It seems this transaction hash has been used to process a swap before. Please reach out to an admin for further assistance.')
-
         except Exception as e:
             logger.error(f'Error retrieving transaction details of hash {tx_hash}: ({type(e)}, {e}')
 
             self.send_message(group_id, 'Transaction could not be verified! Please check your transaction hash and try again.')
 
-    async def perform_swap(self, origin_hash, group_id, eth_amount):
+    async def perform_swap(self, group_id, origin_hash, eth_amount):
         recipient_address = self.raid_info[group_id]['dev_wallet_address']
         token_address = self.raid_info[group_id]['token_address']
+        network = self.raid_info[group_id]['network']
 
         params = {
+            'network': network,
             'origin_hash': origin_hash,
             'recipient_address': recipient_address,
             'token_address': token_address,

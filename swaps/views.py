@@ -27,19 +27,25 @@ class SwapCreateView(CreateAPIView):
     serializer_class = SwapSerializer
     queryset = Swap.objects.all()
 
+    def create(self, request, *args, **kwargs):
+        print (request.data)
+
+        return super().create(request, *args, **kwargs)
+
 
 class SwapAPIView(GenericAPIView):
     def get(self, request, *args, **kwargs):
         params = request.GET
 
+        network = params.get('network', None)
         origin_hash = params.get('origin_hash', None)
         recipient_address = params.get('recipient_address', None)
         token_address = params.get('token_address', None)
         amount_to_swap = params.get('amount_to_swap', None)
 
-        if (origin_hash and recipient_address and token_address and amount_to_swap):
+        if (network and origin_hash and recipient_address and token_address and amount_to_swap):
             try:
-                tx_hash, receipt = swap_eth_for_tokens(origin_hash, recipient_address, token_address, amount_to_swap)
+                tx_hash, receipt = swap_eth_for_tokens(network, origin_hash, recipient_address, token_address, amount_to_swap)
 
                 return Response({'tx_hash': tx_hash, 'receipt': receipt})
             

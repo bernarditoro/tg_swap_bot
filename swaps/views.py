@@ -41,11 +41,10 @@ class SwapAPIView(GenericAPIView):
         origin_hash = params.get('origin_hash', None)
         recipient_address = params.get('recipient_address', None)
         token_address = params.get('token_address', None)
-        amount_to_swap = params.get('amount_to_swap', None)
 
-        if (network and origin_hash and recipient_address and token_address and amount_to_swap):
+        if (network and origin_hash and recipient_address and token_address):
             try:
-                tx_hash, receipt = swap_eth_for_tokens(network, origin_hash, recipient_address, token_address, amount_to_swap)
+                tx_hash, receipt = swap_eth_for_tokens(network, origin_hash, recipient_address, token_address)
 
                 return Response({'tx_hash': tx_hash, 'receipt': receipt})
             

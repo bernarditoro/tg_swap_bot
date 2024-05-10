@@ -23,8 +23,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
     
-def swap_eth_for_tokens(network, origin_hash, recipient_address, token_contract_address, amount_to_swap):
+def swap_eth_for_tokens(network, origin_hash, recipient_address, token_contract_address):
     swap = Swap.objects.get(origin_hash=origin_hash)
+
+    amount_to_swap = swap.get_swap_amount()
 
     private_key = config('WALLET_PRIVATE_KEY') # private key of wallet (for authorisation)
     wallet_address = config('WALLET_ADDRESS') # Where eth to be swapped is taken from
@@ -43,7 +45,7 @@ def swap_eth_for_tokens(network, origin_hash, recipient_address, token_contract_
 
     nonce = web3.eth.get_transaction_count(wallet_address) # Equivalent of an id in a database
     gas_price = web3.eth.gas_price
-    gas_limit = 200000
+    gas_limit = 300000
 
     scan_base_url = config('ETHERSCAN_BASE_URL') if network == 'eth' else config('BASESCAN_BASE_URL')
     abi_params = {

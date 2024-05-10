@@ -52,6 +52,8 @@ class DemoTeleBot(TB):
 
     etherscan_base_url = 'https://api-sepolia.etherscan.io/api' #TODO: Remove the -sepolia before prod
 
+    basescan_base_url = config('BASESCAN_BASE_URL')
+
     # Raid Information Dictionary
     raid_info = {}
 
@@ -82,10 +84,10 @@ class DemoTeleBot(TB):
         @self.message_handler(commands=['start'])
         def start_command(message):
             ad = requests.get(f'{self.backend_url}/ads/get-random/').json()
-            
+
             markup = quick_markup({
                 ad['ad_text']: {'url': ad['external_link']}
-            }, row_width=1)
+            }, row_width=1) if ad['ad_text'] and ad['external_link'] else None
 
             text = """Hi there! I am jpegdude! Here is how you can utilise my functions:\n
 1\u20e3 Add @a_demo_telebot to your Telegram group
@@ -596,7 +598,7 @@ achieve their goal here:
         }
 
         try:
-            request_url = self.etherscan_base_url if network == 'eth' else self.basecan_base_url
+            request_url = self.etherscan_base_url if network == 'eth' else self.basescan_base_url
 
             response = requests.get(request_url, params=params)
             result = response.json()
@@ -619,7 +621,8 @@ achieve their goal here:
                         'destination_address': sender_address,
                         'token_address': self.raid_info[group_id]['token_address'],
                         'origin_hash': tx_hash,
-                        'blockchain_network': 'Ethereum' if network == 'eth' else 'Base'
+                        'blockchain_network': 'Ethereum' if network == 'eth' else 'Base',
+                        'amount_received': eth_amount
                     }
 
                     response = requests.post(f'{self.backend_url}/swaps/create/', data=data)
@@ -629,7 +632,7 @@ achieve their goal here:
                         
                         self.send_message(group_id, 'Transfer has been validated. Please wait while the buyback is executed.')
 
-                        hash, receipt_status = await self.perform_swap(group_id, tx_hash, eth_amount)
+                        hash, receipt_status = await self.perform_swap(group_id, tx_hash)
 
                         if receipt_status == 1:
                             # If transaction was successful
@@ -662,7 +665,7 @@ achieve their goal here:
 
             self.send_message(group_id, 'Transaction could not be verified! Please check your transaction hash and try again.')
 
-    async def perform_swap(self, group_id, origin_hash, eth_amount):
+    async def perform_swap(self, group_id, origin_hash):
         recipient_address = self.raid_info[group_id]['dev_wallet_address']
         token_address = self.raid_info[group_id]['token_address']
         network = self.raid_info[group_id]['network']
@@ -672,7 +675,6 @@ achieve their goal here:
             'origin_hash': origin_hash,
             'recipient_address': recipient_address,
             'token_address': token_address,
-            'amount_to_swap': eth_amount
         }
 
         response = requests.get(f'{self.backend_url}/swaps/swap/', params=params)
